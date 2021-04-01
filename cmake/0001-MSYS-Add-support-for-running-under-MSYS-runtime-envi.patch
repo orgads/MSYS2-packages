@@ -1,0 +1,477 @@
+From db24b1670fc9305293acdb5d29be16347f465d53 Mon Sep 17 00:00:00 2001
+From: Orgad Shaneh <orgads@gmail.com>
+Date: Thu, 1 Apr 2021 20:03:52 +0300
+Subject: [PATCH 1/2] MSYS: Add support for running under MSYS runtime
+ environment
+
+Detect MSYS as CYGWIN, with the required adaptations.
+---
+ Modules/CMakeDetermineSystem.cmake            |  9 ++++++--
+ Modules/CMakePlatformId.h.in                  |  3 +++
+ Modules/CMakeSystemSpecificInformation.cmake  |  1 +
+ Modules/FindThreads.cmake                     |  2 +-
+ Modules/Platform/MSYS-Clang-C.cmake           |  1 +
+ Modules/Platform/MSYS-Clang-CXX.cmake         |  1 +
+ Modules/Platform/MSYS-Determine-CXX.cmake     |  1 +
+ Modules/Platform/MSYS-GNU-C.cmake             |  1 +
+ Modules/Platform/MSYS-GNU-CXX.cmake           |  1 +
+ Modules/Platform/MSYS-GNU-Fortran.cmake       |  1 +
+ Modules/Platform/MSYS-GNU.cmake               |  1 +
+ Modules/Platform/MSYS-windres.cmake           |  1 +
+ Modules/Platform/MSYS.cmake                   |  4 ++++
+ Source/Modules/FindLibUUID.cmake              |  9 +++++++-
+ Source/cmExtraEclipseCDT4Generator.cxx        |  2 +-
+ .../CheckCXXCompilerFlag/CMakeLists.txt       |  2 +-
+ .../CMakeTests/ImplicitLinkInfoTest.cmake.in  | 23 ++++++++++++++++++-
+ Tests/RunCMake/CommandLine/RunCMakeTest.cmake |  2 +-
+ .../RunCMake/find_program/RunCMakeTest.cmake  |  2 +-
+ .../TARGETS-Defaults-Cache-all-check.cmake    | 16 +++++++++++++
+ .../install/TARGETS-Defaults-all-check.cmake  | 18 +++++++++++++++
+ ...TARGETS-NAMELINK_COMPONENT-all-check.cmake | 10 ++++++++
+ ...TARGETS-NAMELINK_COMPONENT-lib-check.cmake |  8 +++++++
+ ...TARGETS-NAMELINK_COMPONENT-uns-check.cmake |  6 +++++
+ .../TARGETS-OUTPUT_NAME-all-check.cmake       |  2 ++
+ Utilities/cmlibuv/CMakeLists.txt              |  2 +-
+ bootstrap                                     | 14 +++++++++--
+ 27 files changed, 131 insertions(+), 12 deletions(-)
+ create mode 100644 Modules/Platform/MSYS-Clang-C.cmake
+ create mode 100644 Modules/Platform/MSYS-Clang-CXX.cmake
+ create mode 100644 Modules/Platform/MSYS-Determine-CXX.cmake
+ create mode 100644 Modules/Platform/MSYS-GNU-C.cmake
+ create mode 100644 Modules/Platform/MSYS-GNU-CXX.cmake
+ create mode 100644 Modules/Platform/MSYS-GNU-Fortran.cmake
+ create mode 100644 Modules/Platform/MSYS-GNU.cmake
+ create mode 100644 Modules/Platform/MSYS-windres.cmake
+ create mode 100644 Modules/Platform/MSYS.cmake
+
+diff --git a/Modules/CMakeDetermineSystem.cmake b/Modules/CMakeDetermineSystem.cmake
+index bae270dec1..99d8902c79 100644
+--- a/Modules/CMakeDetermineSystem.cmake
++++ b/Modules/CMakeDetermineSystem.cmake
+@@ -27,6 +27,7 @@
+ # Tru64                         Tru64
+ # Ultrix                        ULTRIX
+ # cygwin                        CYGWIN_NT-5.1
++# MSYS                          MSYS_NT-6.1
+ # MacOSX                        Darwin
+ 
+ 
+@@ -43,7 +44,7 @@ if(CMAKE_HOST_UNIX)
+     else()
+       exec_program(${CMAKE_UNAME} ARGS -r OUTPUT_VARIABLE CMAKE_HOST_SYSTEM_VERSION)
+     endif()
+-    if(CMAKE_HOST_SYSTEM_NAME MATCHES "Linux|CYGWIN.*|^GNU$|Android")
++    if(CMAKE_HOST_SYSTEM_NAME MATCHES "Linux|CYGWIN.*|MSYS.*|^GNU$|Android")
+       exec_program(${CMAKE_UNAME} ARGS -m OUTPUT_VARIABLE CMAKE_HOST_SYSTEM_PROCESSOR
+         RETURN_VALUE val)
+     elseif(CMAKE_HOST_SYSTEM_NAME MATCHES "Darwin")
+@@ -173,11 +174,15 @@ macro(ADJUST_CMAKE_SYSTEM_VARIABLES _PREFIX)
+     set(${_PREFIX}_NAME kFreeBSD)
+   endif()
+ 
+-  # fix for CYGWIN which has windows version in it
++  # fix for CYGWIN and MSYS which have windows version in them
+   if(${_PREFIX}_NAME MATCHES CYGWIN)
+     set(${_PREFIX}_NAME CYGWIN)
+   endif()
+ 
++  if(${_PREFIX}_NAME MATCHES MSYS)
++    set(${_PREFIX}_NAME MSYS)
++  endif()
++
+   # set CMAKE_SYSTEM to the CMAKE_SYSTEM_NAME
+   set(${_PREFIX}  ${${_PREFIX}_NAME})
+   # if there is a CMAKE_SYSTEM_VERSION then add a -${CMAKE_SYSTEM_VERSION}
+diff --git a/Modules/CMakePlatformId.h.in b/Modules/CMakePlatformId.h.in
+index 1dc12c0606..47ec9b458e 100644
+--- a/Modules/CMakePlatformId.h.in
++++ b/Modules/CMakePlatformId.h.in
+@@ -5,6 +5,9 @@
+ #if defined(__linux) || defined(__linux__) || defined(linux)
+ # define PLATFORM_ID "Linux"
+ 
++#elif defined(__MSYS__)
++# define PLATFORM_ID "MSYS"
++
+ #elif defined(__CYGWIN__)
+ # define PLATFORM_ID "Cygwin"
+ 
+diff --git a/Modules/CMakeSystemSpecificInformation.cmake b/Modules/CMakeSystemSpecificInformation.cmake
+index ea3a445b6e..0ded568835 100644
+--- a/Modules/CMakeSystemSpecificInformation.cmake
++++ b/Modules/CMakeSystemSpecificInformation.cmake
+@@ -14,6 +14,7 @@
+ set(APPLE  )
+ set(UNIX   )
+ set(CYGWIN )
++set(MSYS )
+ set(WIN32  )
+ 
+ 
+diff --git a/Modules/FindThreads.cmake b/Modules/FindThreads.cmake
+index 87e88bc318..17c734d6e8 100644
+--- a/Modules/FindThreads.cmake
++++ b/Modules/FindThreads.cmake
+@@ -225,7 +225,7 @@ if(CMAKE_USE_PTHREADS_INIT)
+     set(CMAKE_THREAD_LIBS_INIT )
+   endif()
+ 
+-  if(CMAKE_SYSTEM MATCHES "CYGWIN_NT")
++  if(CMAKE_SYSTEM MATCHES "CYGWIN_NT" OR CMAKE_SYSTEM MATCHES "MSYS_NT")
+     set(CMAKE_USE_PTHREADS_INIT 1)
+     set(Threads_FOUND TRUE)
+     set(CMAKE_THREAD_LIBS_INIT )
+diff --git a/Modules/Platform/MSYS-Clang-C.cmake b/Modules/Platform/MSYS-Clang-C.cmake
+new file mode 100644
+index 0000000000..f025b33fab
+--- /dev/null
++++ b/Modules/Platform/MSYS-Clang-C.cmake
+@@ -0,0 +1 @@
++include(Platform/CYGWIN-Clang-C)
+diff --git a/Modules/Platform/MSYS-Clang-CXX.cmake b/Modules/Platform/MSYS-Clang-CXX.cmake
+new file mode 100644
+index 0000000000..e509eaad95
+--- /dev/null
++++ b/Modules/Platform/MSYS-Clang-CXX.cmake
+@@ -0,0 +1 @@
++include(Platform/CYGWIN-Clang-CXX)
+diff --git a/Modules/Platform/MSYS-Determine-CXX.cmake b/Modules/Platform/MSYS-Determine-CXX.cmake
+new file mode 100644
+index 0000000000..dec17f03a1
+--- /dev/null
++++ b/Modules/Platform/MSYS-Determine-CXX.cmake
+@@ -0,0 +1 @@
++include(Platform/CYGWIN-Determine-CXX)
+diff --git a/Modules/Platform/MSYS-GNU-C.cmake b/Modules/Platform/MSYS-GNU-C.cmake
+new file mode 100644
+index 0000000000..e8343a442f
+--- /dev/null
++++ b/Modules/Platform/MSYS-GNU-C.cmake
+@@ -0,0 +1 @@
++include(Platform/CYGWIN-GNU-C)
+diff --git a/Modules/Platform/MSYS-GNU-CXX.cmake b/Modules/Platform/MSYS-GNU-CXX.cmake
+new file mode 100644
+index 0000000000..67775deabf
+--- /dev/null
++++ b/Modules/Platform/MSYS-GNU-CXX.cmake
+@@ -0,0 +1 @@
++include(Platform/CYGWIN-GNU-CXX)
+diff --git a/Modules/Platform/MSYS-GNU-Fortran.cmake b/Modules/Platform/MSYS-GNU-Fortran.cmake
+new file mode 100644
+index 0000000000..b0b7d8ed43
+--- /dev/null
++++ b/Modules/Platform/MSYS-GNU-Fortran.cmake
+@@ -0,0 +1 @@
++include(Platform/CYGWIN-GNU-Fortran)
+diff --git a/Modules/Platform/MSYS-GNU.cmake b/Modules/Platform/MSYS-GNU.cmake
+new file mode 100644
+index 0000000000..012c1120ae
+--- /dev/null
++++ b/Modules/Platform/MSYS-GNU.cmake
+@@ -0,0 +1 @@
++include(Platform/CYGWIN-GNU)
+diff --git a/Modules/Platform/MSYS-windres.cmake b/Modules/Platform/MSYS-windres.cmake
+new file mode 100644
+index 0000000000..faaccc2ec7
+--- /dev/null
++++ b/Modules/Platform/MSYS-windres.cmake
+@@ -0,0 +1 @@
++include(Platform/CYGWIN-windres)
+diff --git a/Modules/Platform/MSYS.cmake b/Modules/Platform/MSYS.cmake
+new file mode 100644
+index 0000000000..0fe7f8dca5
+--- /dev/null
++++ b/Modules/Platform/MSYS.cmake
+@@ -0,0 +1,4 @@
++include(Platform/CYGWIN)
++set(MSYS 1)
++set(CMAKE_SHARED_LIBRARY_PREFIX "msys-")
++set(CMAKE_SHARED_MODULE_PREFIX "msys-")
+diff --git a/Source/Modules/FindLibUUID.cmake b/Source/Modules/FindLibUUID.cmake
+index 17f11c1f5e..ca5b61d1c8 100644
+--- a/Source/Modules/FindLibUUID.cmake
++++ b/Source/Modules/FindLibUUID.cmake
+@@ -40,7 +40,14 @@ They may be set by end users to point at LibUUID components.
+ #]=======================================================================]
+ 
+ #-----------------------------------------------------------------------------
+-if(CYGWIN)
++if(MSYS)
++  # Note: on current version of MSYS2, linking to libuuid.dll.a doesn't
++  #       import the right symbols sometimes. Fix this by linking directly
++  #       to the DLL that provides the symbols, instead.
++  find_library(LibUUID_LIBRARY
++    NAMES msys-uuid-1.dll
++    )
++elseif(CYGWIN)
+   # Note: on current version of Cygwin, linking to libuuid.dll.a doesn't
+   #       import the right symbols sometimes. Fix this by linking directly
+   #       to the DLL that provides the symbols, instead.
+diff --git a/Source/cmExtraEclipseCDT4Generator.cxx b/Source/cmExtraEclipseCDT4Generator.cxx
+index ccfd72798a..5fbbef7ac4 100644
+--- a/Source/cmExtraEclipseCDT4Generator.cxx
++++ b/Source/cmExtraEclipseCDT4Generator.cxx
+@@ -655,7 +655,7 @@ void cmExtraEclipseCDT4Generator::CreateCProjectFile() const
+     xml.EndElement(); // extension
+   } else {
+     std::string systemName = mf->GetSafeDefinition("CMAKE_SYSTEM_NAME");
+-    if (systemName == "CYGWIN") {
++    if (systemName == "CYGWIN" || systemName == "MSYS") {
+       xml.StartElement("extension");
+       xml.Attribute("id", "org.eclipse.cdt.core.Cygwin_PE");
+       xml.Attribute("point", "org.eclipse.cdt.core.BinaryParser");
+diff --git a/Tests/CMakeOnly/CheckCXXCompilerFlag/CMakeLists.txt b/Tests/CMakeOnly/CheckCXXCompilerFlag/CMakeLists.txt
+index 7ca68ecf44..aca99ceff7 100644
+--- a/Tests/CMakeOnly/CheckCXXCompilerFlag/CMakeLists.txt
++++ b/Tests/CMakeOnly/CheckCXXCompilerFlag/CMakeLists.txt
+@@ -36,7 +36,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES Intel)
+   string (REGEX REPLACE ".*Version ([0-9]+(\\.[0-9]+)+).*" "\\1" _intel_version "${_intel_version_info}")
+ endif()
+ 
+-message("Platform:\n  WIN32: ${WIN32}\n  UNIX: ${UNIX}\n  APPLE: ${APPLE}\n  MINGW: ${MINGW}\n  CYGWIN: ${CYGWIN}\n"
++message("Platform:\n  WIN32: ${WIN32}\n  UNIX: ${UNIX}\n  APPLE: ${APPLE}\n  MINGW: ${MINGW}\n  CYGWIN: ${CYGWIN}\n  MSYS: ${MSYS}\n"
+   "  MSVC: ${MSVC}\n  MSVC60: ${MSVC60}\n  MSVC70: ${MSVC70}\n  MSVC71: ${MSVC71}\n  MSVC80: ${MSVC80}\n  MSVC90: ${MSVC90}\n  MSVC10: ${MSVC10}\n"
+   "  GCC: ${_gcc_version}\n"
+   "  Clang: ${_clang_version}\n"
+diff --git a/Tests/CMakeTests/ImplicitLinkInfoTest.cmake.in b/Tests/CMakeTests/ImplicitLinkInfoTest.cmake.in
+index f01e616f01..af5ccfa2ed 100644
+--- a/Tests/CMakeTests/ImplicitLinkInfoTest.cmake.in
++++ b/Tests/CMakeTests/ImplicitLinkInfoTest.cmake.in
+@@ -459,7 +459,28 @@ set(msys_g77_dirs "C:/some-mingw/lib/gcc/mingw32/3.4.5;C:/some-mingw/lib/gcc;/so
+ list(APPEND platforms msys_g77)
+ 
+ #-----------------------------------------------------------------------------
+-# MSYS2
++# MSYS2-runtime
++
++# gcc dummy.c -v
++set(msys2rt_gcc_text " /usr/lib/gcc/i686-pc-msys/6.4.0/collect2.exe -Bdynamic --dll-search-prefix=msys- /usr/lib/gcc/i686-pc-msys/6.4.0/../../../crt0.o -L/usr/lib/gcc/i686-pc-msys/6.4.0 -L/usr/lib/gcc/i686-pc-msys/6.4.0 -L/usr/lib/gcc/i686-pc-msys/6.4.0/../../.. /home/user/AppData/Local/Temp/cczg1Arh.o -lgcc -lmsys-2.0 -luser32 -lkernel32 -ladvapi32 -lshell32 -lgcc")
++set(msys2rt_gcc_libs "msys-2.0;user32;kernel32;advapi32;shell32")
++set(msys2rt_gcc_dirs "/usr/lib/gcc/i686-pc-msys/6.4.0;/usr/lib")
++list(APPEND platforms msysrt_gcc)
++
++# g++ dummy.cxx -v
++set(msys2rt_g++_text " /usr/lib/gcc/i686-pc-msys/6.4.0/collect2.exe -Bdynamic --dll-search-prefix=msys- /usr/lib/gcc/i686-pc-msys/6.4.0/../../../crt0.o -L/usr/lib/gcc/i686-pc-msys/6.4.0 -L/usr/lib/gcc/i686-pc-msys/6.4.0 -L/usr/lib/gcc/i686-pc-msys/6.4.0/../../.. /home/user/AppData/Local/Temp/ccsvcDO6.o -lstdc++ -lgcc -lmsys-2.0 -luser32 -lkernel32 -ladvapi32 -lshell32 -lgcc")
++set(msys2rt_g++_libs "stdc++;msys-2.0;user32;kernel32;advapi32;shell32")
++set(msys2rt_g++_dirs "/usr/lib/gcc/i686-pc-msys/6.4.0;/usr/lib")
++list(APPEND platforms msysrt_g++)
++
++# g77 dummy.f -v
++set(msys2rt_g77_text "Configured with: ... LD=/opt/gcc-tools/bin/ld.exe /usr/lib/gcc/i686-pc-msys/6.4.0/collect2.exe -Bdynamic --dll-search-prefix=msys- -u ___register_frame_info -u ___deregister_frame_info /usr/lib/gcc/i686-pc-msys/6.4.0/../../../crt0.o /usr/lib/gcc/i686-pc-msys/6.4.0/crtbegin.o -L/usr/lib/gcc/i686-pc-msys/6.4.0 -L/usr/lib/gcc/i686-pc-msys/6.4.0 -L/usr/lib/gcc/i686-pc-msys/6.4.0/../../.. /home/user/AppData/Local/Temp/ccqRWKWg.o -lgfortranbegin -lgfortran -lgcc_s -lgcc_s -lgcc -lmsys-2.0 -luser32 -lkernel32 -ladvapi32 -lshell32 -lgcc_s -lgcc_s -lgcc /usr/lib/gcc/i686-pc-msys/6.4.0/crtend.o")
++set(msys2rt_g77_libs set(msys_g++_libs "stdc++;msys-2.0;user32;kernel32;advapi32;shell32")
++set(msys2rt_g77_dirs "/usr/lib/gcc/i686-pc-msys/6.4.0;/usr/lib")
++list(APPEND platforms msysrt_g77)
++
++#-----------------------------------------------------------------------------
++# MSYS2-mingw
+ 
+ # gcc dummy.c -v
+ set(msys2_gcc_text " C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/collect2.exe -plugin C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/liblto_plugin-0.dll -plugin-opt=C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/lto-wrapper.exe -plugin-opt=-fresolution=C:/msys64/tmp/ccikz9Wf.res -plugin-opt=-pass-through=-lmingw32 -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_eh -plugin-opt=-pass-through=-lmoldname -plugin-opt=-pass-through=-lmingwex -plugin-opt=-pass-through=-lmsvcrt -plugin-opt=-pass-through=-lpthread -plugin-opt=-pass-through=-ladvapi32 -plugin-opt=-pass-through=-lshell32 -plugin-opt=-pass-through=-luser32 -plugin-opt=-pass-through=-lkernel32 -plugin-opt=-pass-through=-lmingw32 -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_eh -plugin-opt=-pass-through=-lmoldname -plugin-opt=-pass-through=-lmingwex -plugin-opt=-pass-through=-lmsvcrt -m i386pep -Bdynamic C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/../../../../x86_64-w64-mingw32/lib/../lib/crt2.o C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/crtbegin.o -LC:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0 -LC:/msys64/mingw64/bin/../lib/gcc -LC:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/../../../../x86_64-w64-mingw32/lib/../lib -LC:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/../../../../lib -LC:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/../../../../x86_64-w64-mingw32/lib -LC:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/../../.. C:/msys64/tmp/ccK0dTUv.o -lmingw32 -lgcc -lgcc_eh -lmoldname -lmingwex -lmsvcrt -lpthread -ladvapi32 -lshell32 -luser32 -lkernel32 -lmingw32 -lgcc -lgcc_eh -lmoldname -lmingwex -lmsvcrt C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/../../../../x86_64-w64-mingw32/lib/../lib/default-manifest.o C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/7.2.0/crtend.o")
+diff --git a/Tests/RunCMake/CommandLine/RunCMakeTest.cmake b/Tests/RunCMake/CommandLine/RunCMakeTest.cmake
+index 51754fc616..ae5057f716 100644
+--- a/Tests/RunCMake/CommandLine/RunCMakeTest.cmake
++++ b/Tests/RunCMake/CommandLine/RunCMakeTest.cmake
+@@ -772,7 +772,7 @@ function(reject_fifo)
+     run_cmake_command(reject_fifo ${BASH_EXECUTABLE} -c ${BASH_COMMAND_ARGUMENT})
+   endif()
+ endfunction()
+-if(CMAKE_HOST_UNIX AND NOT CMAKE_SYSTEM_NAME STREQUAL "CYGWIN")
++if(CMAKE_HOST_UNIX AND NOT CMAKE_SYSTEM_NAME STREQUAL "CYGWIN" NOT CMAKE_SYSTEM_NAME STREQUAL "MSYS")
+   reject_fifo()
+   run_cmake_command(closed_stdin  sh -c "\"${CMAKE_COMMAND}\" --version <&-")
+   run_cmake_command(closed_stdout sh -c "\"${CMAKE_COMMAND}\" --version >&-")
+diff --git a/Tests/RunCMake/find_program/RunCMakeTest.cmake b/Tests/RunCMake/find_program/RunCMakeTest.cmake
+index 3e23920317..77c021d185 100644
+--- a/Tests/RunCMake/find_program/RunCMakeTest.cmake
++++ b/Tests/RunCMake/find_program/RunCMakeTest.cmake
+@@ -6,7 +6,7 @@ run_cmake(NamesPerDir)
+ run_cmake(RelAndAbsPath)
+ run_cmake(Required)
+ 
+-if(CMAKE_SYSTEM_NAME MATCHES "^(Windows|CYGWIN)$")
++if(CMAKE_SYSTEM_NAME MATCHES "^(Windows|CYGWIN|MSYS)$")
+   run_cmake(WindowsCom)
+   run_cmake(WindowsExe)
+ else()
+diff --git a/Tests/RunCMake/install/TARGETS-Defaults-Cache-all-check.cmake b/Tests/RunCMake/install/TARGETS-Defaults-Cache-all-check.cmake
+index 4a55cd6f0f..0c662f567e 100644
+--- a/Tests/RunCMake/install/TARGETS-Defaults-Cache-all-check.cmake
++++ b/Tests/RunCMake/install/TARGETS-Defaults-Cache-all-check.cmake
+@@ -13,6 +13,22 @@ if(WIN32)
+     [[mylib/(lib)?lib1\.(dll\.a|lib)]]
+     [[mylib/(lib)?lib2\.(a|lib)]]
+     )
++elseif(MSYS)
++  set(_check_files
++    [[lib3]]
++    [[lib3/liblib3\.dll\.a]]
++    [[lib4]]
++    [[lib4/msys-lib4\.dll]]
++    [[mybin]]
++    [[mybin/msys-lib1\.dll]]
++    [[mybin/exe\.exe]]
++    [[myinclude]]
++    [[myinclude/obj4\.h]]
++    [[myinclude/obj5\.h]]
++    [[mylib]]
++    [[mylib/liblib1\.dll\.a]]
++    [[mylib/liblib2\.a]]
++    )
+ elseif(CYGWIN)
+   set(_check_files
+     [[lib3]]
+diff --git a/Tests/RunCMake/install/TARGETS-Defaults-all-check.cmake b/Tests/RunCMake/install/TARGETS-Defaults-all-check.cmake
+index 30f2266d18..8ea5eedeef 100644
+--- a/Tests/RunCMake/install/TARGETS-Defaults-all-check.cmake
++++ b/Tests/RunCMake/install/TARGETS-Defaults-all-check.cmake
+@@ -15,6 +15,24 @@ if(WIN32)
+     [[lib4]]
+     [[lib4/(lib)?lib4\.dll]]
+     )
++elseif(MSYS)
++  set(_check_files
++    [[bin]]
++    [[bin/msys-lib1\.dll]]
++    [[bin/exe\.exe]]
++    [[include]]
++    [[include/obj1\.h]]
++    [[include/obj2\.h]]
++    [[include/obj4\.h]]
++    [[include/obj5\.h]]
++    [[lib]]
++    [[lib/liblib1\.dll\.a]]
++    [[lib/liblib2\.a]]
++    [[lib3]]
++    [[lib3/liblib3\.dll\.a]]
++    [[lib4]]
++    [[lib4/msys-lib4\.dll]]
++    )
+ elseif(CYGWIN)
+   set(_check_files
+     [[bin]]
+diff --git a/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-all-check.cmake b/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-all-check.cmake
+index bc9ebd192f..e602af9b73 100644
+--- a/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-all-check.cmake
++++ b/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-all-check.cmake
+@@ -8,6 +8,16 @@ if(WIN32)
+     [[lib/(lib)?namelink-uns-dev\.dll]]
+     [[lib/(lib)?namelink-uns\.dll]]
+   )
++elseif(MSYS)
++  set(_check_files
++    [[lib]]
++    [[lib/msys-namelink-none\.dll]]
++    [[lib/msys-namelink-same-1\.dll]]
++    [[lib/msys-namelink-sep-1\.dll]]
++    [[lib/msys-namelink-skip-1\.dll]]
++    [[lib/msys-namelink-uns-1\.dll]]
++    [[lib/msys-namelink-uns-dev-1\.dll]]
++  )
+ elseif(CYGWIN)
+   set(_check_files
+     [[lib]]
+diff --git a/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-lib-check.cmake b/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-lib-check.cmake
+index 3f6be686c7..cd579eb564 100644
+--- a/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-lib-check.cmake
++++ b/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-lib-check.cmake
+@@ -6,6 +6,14 @@ if(WIN32)
+     [[lib/(lib)?namelink-sep\.dll]]
+     [[lib/(lib)?namelink-skip\.dll]]
+   )
++elseif(MSYS)
++  set(_check_files
++    [[lib]]
++    [[lib/msys-namelink-none\.dll]]
++    [[lib/msys-namelink-same-1\.dll]]
++    [[lib/msys-namelink-sep-1\.dll]]
++    [[lib/msys-namelink-skip-1\.dll]]
++  )
+ elseif(CYGWIN)
+   set(_check_files
+     [[lib]]
+diff --git a/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-uns-check.cmake b/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-uns-check.cmake
+index 0033c88e47..ea68f4abc8 100644
+--- a/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-uns-check.cmake
++++ b/Tests/RunCMake/install/TARGETS-NAMELINK_COMPONENT-uns-check.cmake
+@@ -4,6 +4,12 @@ if(WIN32)
+     [[lib/(lib)?namelink-uns-dev\.dll]]
+     [[lib/(lib)?namelink-uns\.dll]]
+   )
++elseif(MSYS)
++  set(_check_files
++    [[lib]]
++    [[lib/msys-namelink-uns-1\.dll]]
++    [[lib/msys-namelink-uns-dev-1\.dll]]
++  )
+ elseif(CYGWIN)
+   set(_check_files
+     [[lib]]
+diff --git a/Tests/RunCMake/install/TARGETS-OUTPUT_NAME-all-check.cmake b/Tests/RunCMake/install/TARGETS-OUTPUT_NAME-all-check.cmake
+index 5daecc815d..a2c34678a0 100644
+--- a/Tests/RunCMake/install/TARGETS-OUTPUT_NAME-all-check.cmake
++++ b/Tests/RunCMake/install/TARGETS-OUTPUT_NAME-all-check.cmake
+@@ -4,6 +4,8 @@ if(WIN32)
+   set(test45 [[bin/test4\.dll;bin/test4\.lib;bin/test5ar\.lib]])
+ 
+   check_installed("^bin;(${libtest45};${test123})|(${test123};${test45})\$")
++elseif(MSYS)
++  check_installed([[^bin;bin/msys-test4\.dll;bin/libtest4\.dll\.a;bin/libtest5ar\.a;bin/test1out\.exe;bin/test2deb\.exe;bin/test3exc\.exe$]])
+ elseif(CYGWIN)
+   check_installed([[^bin;bin/cygtest4\.dll;bin/libtest4\.dll\.a;bin/libtest5ar\.a;bin/test1out\.exe;bin/test2deb\.exe;bin/test3exc\.exe$]])
+ elseif(APPLE)
+diff --git a/Utilities/cmlibuv/CMakeLists.txt b/Utilities/cmlibuv/CMakeLists.txt
+index f8b47af467..0dfad51858 100644
+--- a/Utilities/cmlibuv/CMakeLists.txt
++++ b/Utilities/cmlibuv/CMakeLists.txt
+@@ -156,7 +156,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "OS400")
+     )
+ endif()
+ 
+-if(CMAKE_SYSTEM_NAME MATCHES "CYGWIN")
++if(CMAKE_SYSTEM_NAME MATCHES "CYGWIN" OR CMAKE_SYSTEM_NAME MATCHES "MSYS")
+   list(APPEND uv_libraries
+     )
+   list(APPEND uv_headers
+diff --git a/bootstrap b/bootstrap
+index f85d57ee37..655949aa86 100755
+--- a/bootstrap
++++ b/bootstrap
+@@ -96,8 +96,17 @@ else
+   cmake_system_cygwin=false
+ fi
+ 
++# Determine whether this is a MSYS environment.
++if echo "${cmake_system}" | grep MSYS >/dev/null 2>&1; then
++  cmake_system_msys=true
++  cmake_doc_dir_keyword="MSYS"
++  cmake_man_dir_keyword="MSYS"
++else
++  cmake_system_msys=false
++fi
++
+ # Determine whether this is a MinGW environment.
+-if echo "${cmake_system}" | grep 'MINGW\|MSYS' >/dev/null 2>&1; then
++if echo "${cmake_system}" | grep 'MINGW' >/dev/null 2>&1; then
+   cmake_system_mingw=true
+ else
+   cmake_system_mingw=false
+@@ -1066,7 +1075,7 @@ else
+ fi
+ 
+ # Add Cygwin-specific flags
+-if ${cmake_system_cygwin}; then
++if ${cmake_system_cygwin} || ${cmake_system_msys}; then
+   cmake_ld_flags="${LDFLAGS} -Wl,--enable-auto-import"
+ fi
+ 
+@@ -1091,6 +1100,7 @@ cmake_toolchains=''
+ case "${cmake_system}" in
+   *AIX*)   cmake_toolchains='XL GNU' ;;
+   *CYGWIN*) cmake_toolchains='GNU' ;;
++  *MSYS*) cmake_toolchains='GNU' ;;
+   *Darwin*) cmake_toolchains='Clang GNU' ;;
+   *Linux*) cmake_toolchains='GNU Clang XL PGI PathScale' ;;
+   *MINGW*) cmake_toolchains='GNU' ;;
+-- 
+2.31.0.windows.1.1.g431bb406d8
+
